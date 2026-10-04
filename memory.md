@@ -107,7 +107,10 @@ Simulation contract: fixed 60 Hz, driven by `PlayerInput`; it should not read DO
 - `vegetation/` — procedural tree/shrub/lawn generation, atlases, impostors, and shaders.
 - `Sky.ts` — physically based sky, clouds, stars, moon, and day/dusk/night lighting.
 - `traffic.ts` — dense dynamic Outer Ring Road traffic using existing vehicle GLBs; exposes moving obstacles to the authoritative simulation for actor collisions and zombie driver ambushes, and hides traffic outside the camera-facing visibility cone/draw distance.
-- Survivors can press `E` beside a vehicle after its driver has been pulled out, use `WASD` to drive along the road lanes, and press `E` again to exit.
+- Survivors can press `F` beside a vehicle after its driver has been pulled out, use `WASD` with throttle/braking and lane steering, and press `F` again to exit. Outside a vehicle, `F` retains the squad command behavior.
+- `World.updateCrisis()` now provides random active-wave events: traffic surges, gate-breach damage, and emergency supply drops.
+- `src/world/WorldStream.ts` maintains a safe visual chunk ring outside the authored campus. It does not yet add playable collision/nav chunks or rebase authoritative coordinates.
+- `src/world/streaming.ts` defines the 4096 m dynamic-actor wrap policy; survivors/zombies reset interpolation when crossing the wrap so long sessions avoid floating-point drift while the authored campus stays fixed.
 - `data/osm.json` — generated OpenStreetMap-derived campus data.
 - `campusViewer.ts`, `propsViewer.ts` — standalone viewer entrypoints.
 

@@ -14,6 +14,7 @@ import { loadWorldTextures, worldUniforms } from '../world/materials';
 import { Sky } from '../world/Sky';
 import { TreeSystem } from '../world/trees';
 import { TrafficSystem } from '../world/traffic';
+import { WorldStream } from '../world/WorldStream';
 import { GATES, GLOBE_POS, MAIN_GATE_PORTAL, STATIONS } from '../world/layout';
 import { Post } from '../render/Post';
 import { CameraRig } from '../render/CameraRig';
@@ -72,6 +73,7 @@ export class Game {
   chars!: CharacterManager;
   grenades!: GrenadeView;
   traffic!: TrafficSystem;
+  worldStream!: WorldStream;
   weapons = new WeaponModels();
   charLib = new GlbCharacterLibrary();
   hud!: Hud;
@@ -181,6 +183,8 @@ export class Game {
     this.menu.setProgress(0.9, 'Adding traffic…');
     this.traffic = await TrafficSystem.create(this.assets, this.q, this.multiLevel);
     this.engine.scene.add(this.traffic.group);
+    this.worldStream = new WorldStream();
+    this.engine.scene.add(this.worldStream.group);
     this.menu.setProgress(0.93, 'Lighting…');
     this.sky = new Sky(this.engine.renderer, this.engine.scene, this.q.shadowMapSize, this.q.shadowDistance, { low: 4, medium: 6, high: 8, ultra: 10 }[this.settings.quality], { low: 0.35, medium: 0.42, high: 0.5, ultra: 0.6 }[this.settings.quality]);
     this.sky.setTime(0.02);
@@ -601,6 +605,8 @@ export class Game {
     e.renderer.info.reset();
     const w = this.world;
     this.traffic?.update(dt, e.camera);
+    const drivingImpact = this.traffic?.consumePlayerImpact() ?? 0;
+    if (drivingImpact > 0) this.rig.addShake(drivingImpact * 0.7);
     if (w) w.setTraffic(this.traffic.obstacles);
     const host = this.coop?.role === 'host' ? this.coop : null;
     const client = this.coop?.role === 'client' ? this.coop : null;
@@ -622,7 +628,7 @@ export class Game {
             this.pin.fire = this.pin.aim = false;
             this.pin.interact = this.pin.interactPressed = this.pin.command = false;
           }
-          if (this.pin.command && !this.coop) w.toggleNpcMode(); // co-op has no AI squad
+          if (this.pin.command && !this.coop) w.toggleNpcMode(); // F: squad follow / hold in solo
           // aim from where this frame's render camera will be: the last frame's rig offset moved to the player's
           // position at the start of this tick, plus the share of the tick's movement the interpolated render shows
           // (all of it for a tick that isn't the frame's last; none after the 5-step clamp zeroes acc)
@@ -666,6 +672,7 @@ export class Game {
       const pp = new THREE.Vector3().lerpVectors(p.prev, p.pos, p === me ? alpha : 1);
       const sprinting = this.pin.sprint && this.pin.moveZ > 0 && Math.hypot(p.vel.x, p.vel.z) > 5;
       this.rig.update(dt, pp, this.input.yaw, this.input.pitch, p === me && p.aiming && !p.downed, sprinting, p.downed);
+      this.worldStream?.update(pp);
       this.updateGates(dt, w);
       this.updatePickups(dt, w);
       this.audio.update(dt, w, e.camera);

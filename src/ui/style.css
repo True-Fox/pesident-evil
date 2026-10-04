@@ -10,6 +10,7 @@ kbd { font-family: Inter, sans-serif; font-weight: 700; font-size: 0.85em; paddi
 .hud-wave { position: absolute; top: 18px; left: 24px; font-family: 'Bebas Neue', Impact, sans-serif; font-size: 44px; letter-spacing: 2px; color: var(--accent); line-height: 1; }
 .hud-wave-sub { position: absolute; top: 64px; left: 26px; font-size: 14px; opacity: 0.9; }
 .hud-wave-sub b { color: #fff; }
+.hud-wave-sub em { color: var(--accent); font-style: normal; font-weight: 800; letter-spacing: 0.5px; }
 .hud-msgs { position: absolute; top: 96px; left: 24px; width: min(440px, 42vw); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .hud-msg { background: var(--glass); padding: 6px 14px; border-radius: 6px; font-size: 14px; transition: opacity 0.9s; border-left: 3px solid #9aa4b1; backdrop-filter: blur(4px); }
 .hud-msg.warn { border-left-color: var(--danger); }

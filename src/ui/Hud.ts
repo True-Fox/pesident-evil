@@ -157,7 +157,10 @@ export class Hud {
     } else if (world.state === 'active') {
       const alive = world.zombies.reduce((n, z) => n + (z.alive ? 1 : 0), 0);
       this.waveEl.textContent = `WAVE ${world.wave}`;
-      this.waveSub.innerHTML = `<b>${alive + world.toSpawn}</b> zombies left`;
+      const crisis = world.crisis === 'traffic_surge' ? 'TRAFFIC SURGE — keep the road clear'
+        : world.crisis === 'gate_breach' ? 'GATE EMERGENCY — repair and defend'
+          : world.crisis === 'emergency_resupply' ? 'SUPPLY DROP — collect nearby supplies' : '';
+      this.waveSub.innerHTML = `<b>${alive + world.toSpawn}</b> zombies left${crisis ? `<br><em>${crisis} · ${Math.ceil(world.crisisT)}s</em>` : ''}`;
     } else if (world.state === 'gameover') {
       this.waveEl.textContent = '';
       this.waveSub.textContent = '';

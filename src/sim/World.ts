@@ -12,6 +12,7 @@ import { LayeredNav } from './LayeredNav';
 import { NavGrid, type Nav } from './NavGrid';
 import { GRENADE, newSlot, WEAPONS, type WeaponDef, type WeaponId } from './weapons';
 import type { TrafficObstacle } from '../world/traffic';
+import { wrapRoadPosition, wrapWorldPosition } from '../world/streaming';
 
 export interface GateState {
   id: string;
@@ -58,6 +59,7 @@ export interface Grenade {
 }
 
 export type DirectorState = 'intro' | 'prep' | 'active' | 'gameover';
+export type CrisisKind = 'traffic_surge' | 'gate_breach' | 'emergency_resupply';
 
 export interface NpcBrain {
   mode: 'follow' | 'hold';
@@ -149,6 +151,8 @@ export class World {
   toSpawn = 0;
   spawnCd = 0;
   totalKills = 0;
+  crisis: CrisisKind | null = null;
+  crisisT = 0;
   private rand = rng(1337);
   private zSpatial: Int32Array;
   private zNext: Int32Array;
@@ -162,6 +166,7 @@ export class World {
   private grenadeId = 1;
   private waveMessageShown = new Set<string>();
   private traffic: TrafficObstacle[] = [];
+  private nextCrisisT = 38;
 
   readonly role: 'solo' | 'host' | 'client';
 
@@ -268,6 +273,7 @@ export class World {
     for (const z of this.zombies) z.snapshotPrev();
 
     this.updateDirector(dt);
+    this.updateCrisis(dt);
     this.updateFields(dt);
     this.rebuildSpatial();
     // survivors act one after another; the starting one rotates every tick, so when two players' shots would both
@@ -284,6 +290,7 @@ export class World {
     for (let i = 0; i < this.zombies.length; i++) this.updateZombie(this.zombies[i], i, dt);
     this.updateTrafficCollisions();
     this.separate();
+    this.wrapDynamicActors();
     this.updateGrenades(dt);
     this.updateGateStates();
     this.updatePickups(dt);
@@ -315,7 +322,7 @@ export class World {
       if (secs !== Math.ceil(this.stateT + dt)) this.events.emit('prepTick', { wave: this.wave + 1, secondsLeft: secs });
       if (this.stateT <= 0) this.startWave();
     } else if (this.state === 'active') {
-      this.spawnCd -= dt;
+      this.spawnCd -= dt * (this.crisis === 'traffic_surge' ? 1.65 : 1);
       const alive = this.zombies.reduce((n, z) => n + (z.alive ? 1 : 0), 0);
       if (this.toSpawn > 0 && alive < this.maxAlive(this.wave) && this.spawnCd <= 0) {
         this.spawnZombie();
@@ -336,6 +343,49 @@ export class World {
     if (p && (this.state as DirectorState) !== 'gameover' && this.survivors.every((s) => s.kind !== 'player' || !s.alive)) {
       this.state = 'gameover';
       this.events.emit('gameOver', { wave: this.wave, kills: p.kills, points: this.points.get(p.id) ?? 0 });
+    }
+  }
+
+  /** Random mid-wave pressure events keep a run from becoming a predictable firing gallery. */
+  private updateCrisis(dt: number): void {
+    if (this.state !== 'active') {
+      this.crisis = null;
+      this.crisisT = 0;
+      this.nextCrisisT = Math.min(this.nextCrisisT, 18);
+      return;
+    }
+    if (this.crisis) {
+      this.crisisT -= dt;
+      if (this.crisisT <= 0) {
+        this.crisis = null;
+        this.nextCrisisT = 28 + this.rand() * 24;
+      }
+      return;
+    }
+    this.nextCrisisT -= dt;
+    if (this.nextCrisisT > 0 || this.wave < 2) return;
+    const roll = this.rand();
+    if (roll < 0.4) {
+      this.crisis = 'traffic_surge';
+      this.crisisT = 18;
+      this.events.emit('message', { text: 'Traffic surge! The Ring Road is turning into a moving wall.', kind: 'warn' });
+    } else if (roll < 0.72) {
+      const candidates = this.gates.filter((g) => !g.broken && this.wave >= g.activeFromWave);
+      const gate = candidates[Math.floor(this.rand() * candidates.length)] ?? this.gates[0];
+      this.crisis = 'gate_breach';
+      this.crisisT = 8;
+      if (gate) {
+        this.damageGate(gate, gate.maxHp * (0.12 + this.rand() * 0.1), new THREE.Vector3((gate.a[0] + gate.b[0]) / 2, 0, (gate.a[1] + gate.b[1]) / 2));
+        this.events.emit('message', { text: `Emergency! The ${gate.id.toUpperCase()} gate is taking structural damage!`, kind: 'warn' });
+      }
+    } else {
+      this.crisis = 'emergency_resupply';
+      this.crisisT = 10;
+      for (const s of this.survivors) {
+        if (!s.active) continue;
+        this.spawnPickup(this.rand() < 0.5 ? 'ammo' : 'health', s.pos);
+      }
+      this.events.emit('message', { text: 'Emergency supply drop! Check near the squad before it expires.', kind: 'good' });
     }
   }
 
@@ -526,6 +576,7 @@ export class World {
         if (car.moving && !car.zombieStop) car.requestStop();
       }
       for (const s of this.survivors) {
+        if (car.driverId === s.id) continue;
         if (!s.alive || Math.abs(s.pos.y - car.y) > 1.4) continue;
         const dx = s.pos.x - car.x, dz = s.pos.z - car.z;
         const d2 = dx * dx + dz * dz, min = car.radius + s.radius;
@@ -535,6 +586,16 @@ export class World {
         s.pos.z += (dz / d) * (min - d + 0.05);
         if (car.moving && car.speed > 10 && s.sinceDamage > 0.5) this.damageSurvivor(s, 12, new THREE.Vector3(car.x, car.y, car.z));
       }
+    }
+  }
+
+  /** Keep long-running sessions numerically stable while streamed scenery continues around the player. */
+  private wrapDynamicActors(): void {
+    for (const actor of [...this.survivors, ...this.zombies]) {
+      const roadWrapped = wrapRoadPosition(actor.pos);
+      if (!roadWrapped && !wrapWorldPosition(actor.pos)) continue;
+      actor.prev.copy(actor.pos);
+      actor.vel.set(0, 0, 0);
     }
   }
 
@@ -1292,7 +1353,7 @@ export class World {
   // ---------------------------------------------------------------------------------------------
   // Interactions: revive, stations, gate repair
   // ---------------------------------------------------------------------------------------------
-  getInteract(p: Survivor): { kind: 'revive' | 'station' | 'repair' | null; target?: Survivor; station?: StationDef; gate?: GateState; prompt: InteractPrompt | null } {
+  getInteract(p: Survivor): { kind: 'revive' | 'station' | 'repair' | 'vehicle' | null; target?: Survivor; station?: StationDef; gate?: GateState; prompt: InteractPrompt | null } {
     if (!p.active) return { kind: null, prompt: null };
     for (const o of this.survivors) {
       if (o === p || !o.alive || !o.downed) continue;
@@ -1327,6 +1388,17 @@ export class World {
         : g.hp >= g.maxHp * GATE_CLOSE_FRAC && this.gateBlocked(g) ? `Clear the gateway! Zombies are blocking the ${g.id} gate (${pct}%)`
           : `Hold E to rebuild the ${g.id} gate (${pct}%)`;
       return { kind: 'repair', gate: g, prompt: { text, progress: g.hp / g.maxHp, cost: 0, canAfford: true } };
+    }
+    // Traffic supplies lightweight dynamic interaction data to the simulation. This gives E a
+    // discoverable vehicle prompt without making the render system authoritative.
+    for (const car of this.traffic) {
+      const d = Math.hypot(car.x - p.pos.x, car.z - p.pos.z);
+      if (car.driverId === p.id && d < 3.2) {
+        return { kind: 'vehicle', prompt: { text: 'E — Exit vehicle', progress: 0, cost: 0, canAfford: true } };
+      }
+      if (car.driveable && d < 4) {
+        return { kind: 'vehicle', prompt: { text: 'E — Enter abandoned vehicle', progress: 0, cost: 0, canAfford: true } };
+      }
     }
     return { kind: null, prompt: null };
   }

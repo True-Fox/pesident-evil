@@ -31,7 +31,7 @@ npm run build
 | Right click | Aim down sights |
 | Shift / Space | Sprint / jump |
 | R | Reload |
-| E (hold) | Interact: buy at stations, revive squad-mates or teammates, repair the gate |
+| E | Interact: enter/exit an abandoned vehicle, buy at stations, revive squad-mates or teammates, repair the gate |
 | 1–4 / wheel | Switch weapon |
 | V or Q | Quick bat swing |
 | F | Squad: hold position / follow me (solo) |

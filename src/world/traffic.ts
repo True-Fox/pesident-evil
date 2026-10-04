@@ -18,6 +18,12 @@ interface Vehicle {
   hijackT: number;
   hijacked: boolean;
   manualSpeed: number;
+  currentSpeed: number;
+  steering: number;
+  damage: number;
+  hornT: number;
+  aiLane: number;
+  impactT: number;
 }
 
 export interface TrafficObstacle {
@@ -32,6 +38,8 @@ export interface TrafficObstacle {
   hijackReady: boolean;
   hijacked: boolean;
   driveable: boolean;
+  driverId: number;
+  damage: number;
   requestStop: () => void;
   hijack: () => void;
 }
@@ -50,6 +58,8 @@ export class TrafficSystem {
   readonly group = new THREE.Group();
   private readonly vehicles: Vehicle[] = [];
   private driving: { vehicle: Vehicle; playerId: number } | null = null;
+  private trafficClock = 0;
+  private playerImpact = 0;
   private readonly drawDistance: number;
 
   private constructor(private readonly multiLevel: boolean, drawDistance: number) {
@@ -99,6 +109,12 @@ export class TrafficSystem {
         hijackT: 0,
         hijacked: false,
         manualSpeed: 0,
+        currentSpeed: (kind === 'bmtc_bus' ? 8 : kind === 'motorbike' ? 13 : 10),
+        steering: 0,
+        damage: 0,
+        hornT: 0,
+        aiLane: lane(direction, Math.floor(i / 2) % 3),
+        impactT: 0,
       });
     }
     traffic.update(0);
@@ -106,6 +122,7 @@ export class TrafficSystem {
   }
 
   update(dt: number, camera?: THREE.Camera): void {
+    this.trafficClock += dt;
     const t0 = -430;
     const t1 = 330;
     const cameraPos = camera?.getWorldPosition(_cameraPos);
@@ -113,8 +130,46 @@ export class TrafficSystem {
     for (const vehicle of this.vehicles) {
       if (vehicle.stopT > 0 && vehicle.stopT !== Infinity) vehicle.stopT -= dt;
       if (vehicle.hijackT > 0 && vehicle.hijackT < 2.5) vehicle.hijackT += dt;
-      if (vehicle.stopT <= 0 && !vehicle.hijacked && this.driving?.vehicle !== vehicle) vehicle.t += vehicle.direction * vehicle.speed * dt;
-      if (this.driving?.vehicle === vehicle) vehicle.t += vehicle.direction * vehicle.manualSpeed * dt;
+      vehicle.hornT = Math.max(0, vehicle.hornT - dt);
+      vehicle.impactT = Math.max(0, vehicle.impactT - dt);
+      const playerCar = this.driving?.vehicle === vehicle;
+      if (playerCar) {
+        const max = (vehicle.kind === 'bmtc_bus' ? 11 : vehicle.kind === 'motorbike' ? 24 : 18) * (1 - vehicle.damage * 0.55);
+        const target = vehicle.manualSpeed > 0 ? max : vehicle.manualSpeed < 0 ? -max * 0.35 : 0;
+        const response = Math.abs(target) > Math.abs(vehicle.currentSpeed) ? 12 : 22;
+        vehicle.currentSpeed += THREE.MathUtils.clamp(target - vehicle.currentSpeed, -response * dt, response * dt);
+        vehicle.t += vehicle.direction * vehicle.currentSpeed * dt;
+      } else if (vehicle.stopT <= 0 && !vehicle.hijacked) {
+        let desired = vehicle.speed * (1 - vehicle.damage * 0.55);
+        for (const ahead of this.vehicles) {
+          if (ahead === vehicle || ahead.direction !== vehicle.direction) continue;
+          const gap = (ahead.t - vehicle.t) * vehicle.direction;
+          if (gap > 0 && gap < 20 && Math.abs(ahead.lane - vehicle.lane) < 0.8) desired = Math.min(desired, Math.max(2.5, ahead.currentSpeed - 2));
+        }
+        const junction = Math.abs((((vehicle.t % 260) + 260) % 260) - 80) < 7;
+        // Shared, cycling signal: vehicles may wait briefly, but a fixed per-car phase can never
+        // trap a vehicle at the junction indefinitely.
+        const red = Math.sin(this.trafficClock * 0.42 + vehicle.phase * 0.15) < -0.15;
+        if (junction && red) desired = 0;
+        vehicle.currentSpeed += THREE.MathUtils.clamp(desired - vehicle.currentSpeed, -10 * dt, 7 * dt);
+        vehicle.t += vehicle.direction * vehicle.currentSpeed * dt;
+        const blocked = this.vehicles.some((ahead) => ahead !== vehicle && ahead.direction === vehicle.direction &&
+          (ahead.t - vehicle.t) * vehicle.direction > 0 && (ahead.t - vehicle.t) * vehicle.direction < 12 && Math.abs(ahead.lane - vehicle.lane) < 0.7 && ahead.currentSpeed < vehicle.currentSpeed - 3);
+        if (blocked) {
+          const laneMin = ORR.median / 2 + 0.9;
+          const laneMax = ORR.width / 2 - 1.2;
+          const candidates = [vehicle.lane + vehicle.direction * 2.1, vehicle.lane - vehicle.direction * 2.1]
+            .map((candidate) => vehicle.direction * THREE.MathUtils.clamp(Math.abs(candidate), laneMin, laneMax));
+          const open = candidates.find((candidate) => !this.vehicles.some((other) => other !== vehicle && other.direction === vehicle.direction &&
+            Math.abs(other.lane - candidate) < 1.2 && Math.abs((other.t - vehicle.t) * vehicle.direction) < 14));
+          if (open !== undefined) vehicle.aiLane = open;
+        }
+        const laneError = vehicle.aiLane - vehicle.lane;
+        vehicle.steering = THREE.MathUtils.clamp(laneError * 0.35, -1, 1);
+        vehicle.lane += (vehicle.aiLane - vehicle.lane) * Math.min(1, dt * 1.6);
+      } else {
+        vehicle.currentSpeed += (0 - vehicle.currentSpeed) * Math.min(1, dt * 8);
+      }
       if (vehicle.t > t1 + 35) vehicle.t = t0 - 35;
       if (vehicle.t < t0 - 35) vehicle.t = t1 + 35;
       this.placeVehicle(vehicle);
@@ -126,6 +181,40 @@ export class TrafficSystem {
         vehicle.object.visible = distance <= this.drawDistance && facing > -0.12;
       } else vehicle.object.visible = true;
     }
+    this.resolveVehicleImpacts();
+  }
+
+  /** Returns and clears the newest impact intensity for the local driver's camera feedback. */
+  consumePlayerImpact(): number {
+    const impact = this.playerImpact;
+    this.playerImpact = 0;
+    return impact;
+  }
+
+  private radius(vehicle: Vehicle): number {
+    return vehicle.kind === 'bmtc_bus' ? 2.2 : vehicle.kind === 'motorbike' ? 0.75 : 1.35;
+  }
+
+  /** Simple bumper collision: stop, damage and separate instead of allowing cars to ghost through. */
+  private resolveVehicleImpacts(): void {
+    for (let i = 0; i < this.vehicles.length; i++) for (let j = i + 1; j < this.vehicles.length; j++) {
+      const a = this.vehicles[i], b = this.vehicles[j];
+      if (a.impactT > 0 || b.impactT > 0 || a.hijacked || b.hijacked) continue;
+      const dx = a.object.position.x - b.object.position.x, dz = a.object.position.z - b.object.position.z;
+      const min = this.radius(a) + this.radius(b);
+      if (dx * dx + dz * dz >= min * min) continue;
+      const relative = Math.abs(a.currentSpeed - b.currentSpeed);
+      const intensity = THREE.MathUtils.clamp(relative / 22, 0.12, 0.7);
+      a.damage = THREE.MathUtils.clamp(a.damage + intensity * 0.14, 0, 0.85);
+      b.damage = THREE.MathUtils.clamp(b.damage + intensity * 0.1, 0, 0.85);
+      a.currentSpeed *= 0.38;
+      b.currentSpeed *= 0.38;
+      a.impactT = b.impactT = 0.45;
+      // Nudge along the road direction; the next placement rebuilds a clean non-overlapping pose.
+      a.t -= a.direction * 1.4;
+      b.t += b.direction * 1.4;
+      if (this.driving?.vehicle === a || this.driving?.vehicle === b) this.playerImpact = Math.max(this.playerImpact, intensity);
+    }
   }
 
   get obstacles(): TrafficObstacle[] {
@@ -135,12 +224,14 @@ export class TrafficSystem {
       z: vehicle.object.position.z,
       y: vehicle.object.position.y,
       radius: vehicle.kind === 'bmtc_bus' ? 2.2 : vehicle.kind === 'motorbike' ? 0.75 : 1.35,
-      speed: this.driving?.vehicle === vehicle ? Math.abs(vehicle.manualSpeed) : vehicle.speed,
-      moving: vehicle.stopT <= 0 && !vehicle.hijacked && (this.driving?.vehicle !== vehicle || Math.abs(vehicle.manualSpeed) > 0.5),
+      speed: Math.abs(vehicle.currentSpeed),
+      moving: vehicle.stopT <= 0 && !vehicle.hijacked && Math.abs(vehicle.currentSpeed) > 0.5,
       zombieStop: vehicle.hijackT > 0,
       hijackReady: vehicle.hijackT >= 2.5,
       hijacked: vehicle.hijacked,
       driveable: vehicle.hijacked,
+      driverId: this.driving?.vehicle === vehicle ? this.driving.playerId : 0,
+      damage: vehicle.damage,
       requestStop: () => {
         if (vehicle.hijacked) return;
         vehicle.stopT = Infinity;
@@ -155,11 +246,11 @@ export class TrafficSystem {
     }));
   }
 
-  /** Survivor takeover: F near an abandoned vehicle, WASD to drive, F to exit. */
-  drive(playerId: number, player: { pos: THREE.Vector3; yaw: number }, input: { moveX: number; moveZ: number; command: boolean }, dt: number): boolean {
+  /** Survivor takeover: E near an abandoned vehicle, WASD to drive, E to exit. */
+  drive(playerId: number, player: { pos: THREE.Vector3; yaw: number }, input: { moveX: number; moveZ: number; interactPressed: boolean }, dt: number): boolean {
     if (this.driving && this.driving.playerId !== playerId) return false;
     if (!this.driving) {
-      if (!input.command) return false;
+      if (!input.interactPressed) return false;
       let best: Vehicle | null = null, bestD = 4;
       for (const vehicle of this.vehicles) {
         if (!vehicle.hijacked || vehicle.hijackT < 2.5) continue;
@@ -175,7 +266,7 @@ export class TrafficSystem {
       return true;
     }
     const vehicle = this.driving.vehicle;
-    if (input.command) {
+    if (input.interactPressed) {
       this.driving = null;
       vehicle.stopT = 0;
       vehicle.hijacked = false;
@@ -186,6 +277,7 @@ export class TrafficSystem {
     const targetSpeed = input.moveZ * maxSpeed;
     const accel = Math.abs(targetSpeed) > 0.01 ? 18 : 26;
     vehicle.manualSpeed += THREE.MathUtils.clamp(targetSpeed - vehicle.manualSpeed, -accel * dt, accel * dt);
+    vehicle.steering = THREE.MathUtils.clamp(vehicle.steering + input.moveX * dt * 3, -1, 1);
     const minLane = ORR.median / 2 + 0.9;
     const maxLane = ORR.width / 2 - 1.2;
     const laneAbs = THREE.MathUtils.clamp(Math.abs(vehicle.lane) - input.moveX * 4 * dt, minLane, maxLane);
@@ -201,6 +293,10 @@ export class TrafficSystem {
     const y = this.multiLevel ? terrainY(x, z) : 0;
     vehicle.object.position.set(x, y + 0.065, z);
     vehicle.object.rotation.y = Math.atan2(ORR.dir[0] * vehicle.direction, ORR.dir[1] * vehicle.direction);
+    vehicle.object.rotation.y += vehicle.steering * 0.12;
+    // Body roll is strongest at the start of a lane change and settles as the wheels straighten.
+    vehicle.object.rotation.z = -vehicle.steering * Math.min(0.11, 0.035 + Math.abs(vehicle.currentSpeed) / 150);
+    vehicle.object.scale.setScalar(1 - vehicle.damage * 0.035);
     vehicle.object.position.y += Math.sin(vehicle.phase + vehicle.t * 0.05) * 0.008;
   }
 }

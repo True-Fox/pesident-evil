@@ -1504,12 +1504,12 @@ class Dresser {
       const bus = this.place('bus', x, z, yaw, { margin: 0.3, laneOk: true, solid: { shape: 'rect', surface: 'metal' } });
       if (!bus) continue;
       // car T-boned into its flank, another spun into its tail, an auto on its side by the nose
-      const side = local(x, z, yaw, -(bus.w / 2 + 2.0), 1.6);
+      const side = local(x, z, yaw, -(bus!.w / 2 + 2.0), 1.6);
       const cyaw = yaw + HALF_PI + 0.25;
       this.place('car', side[0], side[1], cyaw, { color: CAR_PAINT[1], margin: 0.05, laneOk: true, force: false, solid: { shape: 'rect', surface: 'metal' } });
-      const tail = local(x, z, yaw, 0.9, -(bus.l / 2 + 2.3));
+      const tail = local(x, z, yaw, 0.9, -(bus!.l / 2 + 2.3));
       this.place('car', tail[0], tail[1], yaw + 0.5, { color: CAR_PAINT[2], margin: 0.05, laneOk: true, solid: { shape: 'rect', surface: 'metal' } });
-      for (const [lx, lz, yo] of [[2.8, bus.l / 2 + 1.2, -1.1], [-3.2, bus.l / 2 - 1.0, 1.9], [bus.w / 2 + 1.6, -1.5, 0.4], [-(bus.w / 2 + 1.6), -3.5, 2.6]] as [number, number, number][]) {
+      for (const [lx, lz, yo] of [[2.8, bus!.l / 2 + 1.2, -1.1], [-3.2, bus!.l / 2 - 1.0, 1.9], [bus!.w / 2 + 1.6, -1.5, 0.4], [-(bus!.w / 2 + 1.6), -3.5, 2.6]] as [number, number, number][]) {
         const nose = local(x, z, yaw, lx, lz);
         if (this.place('auto', nose[0], nose[1], yaw + yo, { roll: HALF_PI, margin: 0.05, laneOk: true, solid: { shape: 'rect', surface: 'metal' } })) break;
       }
