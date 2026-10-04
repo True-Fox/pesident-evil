@@ -1291,16 +1291,6 @@ class Dresser {
       const [x, z] = P((R() - 0.5) * 18, -16 - R() * 12);
       this.place('barricade', x, z, R() * Math.PI * 2, { pitch: -HALF_PI + 0.06, margin: 0.1, solid: { shape: 'rect', surface: 'metal', h: 0.4 } });
     }
-    // autos waiting outside the gate (auto stand along the admission block) + one abandoned askew
-    const standYaw = inYaw; // nose toward the gate
-    for (let i = 0, n = 0; i < 8 && n < 3; i++) {
-      const [x, z] = P(f.len / 2 - 2.0 + (R() - 0.5) * 0.3, -19 - i * 3.6);
-      if (this.place('auto', x, z, standYaw + (R() - 0.5) * 0.18, { margin: 0.15, solid: { shape: 'rect', surface: 'metal' } })) n++;
-    }
-    for (let i = 0; i < 8; i++) {
-      const [x, z] = P(-f.len / 2 - 4 - R() * 6, -14 - R() * 16);
-      if (this.place('auto', x, z, R() * Math.PI * 2, { margin: 0.2, solid: { shape: 'rect', surface: 'metal' } })) break;
-    }
     // proper Namma Metro barrier panels on the ORR verge either side of the forecourt mouth (mouth left open)
     const gt = (f.mid[0] - ORR.origin[0]) * ORR.dir[0] + (f.mid[1] - ORR.origin[1]) * ORR.dir[1];
     const vergeOff = -(ORR.width / 2 + 1.1);
@@ -1484,6 +1474,10 @@ class Dresser {
 
   // ------------------------------------------------------------------ Outer Ring Road
   orr(): void {
+    // The Ring Road is animated by TrafficSystem. Keep only the physical metro worksite here;
+    // parked/crashed vehicles made the road look permanently blocked.
+    this.metroPit();
+    return;
     const R = rng(515);
     const dirYaw = yawTo(ORR.dir[0], ORR.dir[1]);
     const halfMain = (ORR.width - ORR.median) / 2;
@@ -1947,8 +1941,6 @@ export async function buildProps(assets: Assets, collision: StaticCollision, opt
   d.forecourt();
   d.orr();
   d.medianScooters(opts.medianPts);
-  d.collegeBuses();
-  d.campusCars();
   d.foodCourt();
   d.courtyard();
   d.entrances();

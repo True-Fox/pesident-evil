@@ -13,6 +13,7 @@ import { CampusBuilder, type CampusBuild } from '../world/Campus';
 import { loadWorldTextures, worldUniforms } from '../world/materials';
 import { Sky } from '../world/Sky';
 import { TreeSystem } from '../world/trees';
+import { TrafficSystem } from '../world/traffic';
 import { GATES, GLOBE_POS, MAIN_GATE_PORTAL, STATIONS } from '../world/layout';
 import { Post } from '../render/Post';
 import { CameraRig } from '../render/CameraRig';
@@ -70,6 +71,7 @@ export class Game {
   rig!: CameraRig;
   chars!: CharacterManager;
   grenades!: GrenadeView;
+  traffic!: TrafficSystem;
   weapons = new WeaponModels();
   charLib = new GlbCharacterLibrary();
   hud!: Hud;
@@ -176,7 +178,10 @@ export class Game {
     const ts = applyTerrain({ roots: [this.campus.group, ...(propsGroup ? [propsGroup] : [])], collision: this.campus.collision, hooks: [trees], edgeGroup: this.campus.group });
     if (ts.ms) console.info(`[terrain] lifted ${ts.meshes} meshes (${ts.verts} verts, +${ts.added} from subdivision) in ${ts.ms} ms`);
     for (const [, g] of this.campus.gates) g.panels.forEach((p, i) => g.closedPos[i].copy(p.position)); // gates slide from where they now stand
-    this.menu.setProgress(0.85, 'Lighting…');
+    this.menu.setProgress(0.9, 'Adding traffic…');
+    this.traffic = await TrafficSystem.create(this.assets, this.q, this.multiLevel);
+    this.engine.scene.add(this.traffic.group);
+    this.menu.setProgress(0.93, 'Lighting…');
     this.sky = new Sky(this.engine.renderer, this.engine.scene, this.q.shadowMapSize, this.q.shadowDistance, { low: 4, medium: 6, high: 8, ultra: 10 }[this.settings.quality], { low: 0.35, medium: 0.42, high: 0.5, ultra: 0.6 }[this.settings.quality]);
     this.sky.setTime(0.02);
     this.post = new Post(this.engine.renderer, this.engine.scene, this.engine.camera, this.q);
@@ -595,6 +600,8 @@ export class Game {
     const e = this.engine;
     e.renderer.info.reset();
     const w = this.world;
+    this.traffic?.update(dt, e.camera);
+    if (w) w.setTraffic(this.traffic.obstacles);
     const host = this.coop?.role === 'host' ? this.coop : null;
     const client = this.coop?.role === 'client' ? this.coop : null;
     // co-op can't pause: behind the pause menu the game keeps running (with no input from this player)
@@ -609,6 +616,12 @@ export class Game {
         while (this.acc >= this.fixed && steps < 5) {
           this.input.sample(this.pin, first);
           if (!this.input.locked || this.state !== 'playing') { this.pin.fire = false; this.pin.aim = false; this.pin.moveX = this.pin.moveZ = 0; }
+          const driving = w.player ? this.traffic?.drive(w.player.id, w.player, this.pin, this.fixed) ?? false : false;
+          if (driving) {
+            this.pin.moveX = this.pin.moveZ = 0;
+            this.pin.fire = this.pin.aim = false;
+            this.pin.interact = this.pin.interactPressed = this.pin.command = false;
+          }
           if (this.pin.command && !this.coop) w.toggleNpcMode(); // co-op has no AI squad
           // aim from where this frame's render camera will be: the last frame's rig offset moved to the player's
           // position at the start of this tick, plus the share of the tick's movement the interpolated render shows

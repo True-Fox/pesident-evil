@@ -11,6 +11,7 @@ import { INF } from './flowfield';
 import { LayeredNav } from './LayeredNav';
 import { NavGrid, type Nav } from './NavGrid';
 import { GRENADE, newSlot, WEAPONS, type WeaponDef, type WeaponId } from './weapons';
+import type { TrafficObstacle } from '../world/traffic';
 
 export interface GateState {
   id: string;
@@ -160,6 +161,7 @@ export class World {
   private tickN = 0;
   private grenadeId = 1;
   private waveMessageShown = new Set<string>();
+  private traffic: TrafficObstacle[] = [];
 
   readonly role: 'solo' | 'host' | 'client';
 
@@ -223,6 +225,9 @@ export class World {
 
   get player(): Survivor | undefined { return this.survivors.find((s) => s.id === this.localPlayerId); }
 
+  /** Render-side traffic is supplied each frame; only the authoritative world applies its collisions. */
+  setTraffic(obstacles: TrafficObstacle[]): void { this.traffic = obstacles; }
+
   /** Co-op client: a survivor as the host created it (same id); its state then comes from snapshots. */
   addMirrorSurvivor(id: number, kind: 'player' | 'npc', name: string, voice: 'male' | 'female', look: Look): Survivor {
     const s = new Survivor(kind, name, voice, look);
@@ -277,6 +282,7 @@ export class World {
       this.updateSurvivorCommon(s, dt);
     }
     for (let i = 0; i < this.zombies.length; i++) this.updateZombie(this.zombies[i], i, dt);
+    this.updateTrafficCollisions();
     this.separate();
     this.updateGrenades(dt);
     this.updateGateStates();
@@ -498,6 +504,55 @@ export class World {
         this.collision.clampLip(s.pos, s.pos.y);
       } else this.collision.resolveCircle(s.pos, s.radius, s.pos.y + 0.3);
     }
+  }
+
+  /** Traffic is intentionally outside the nav/collision mesh: moving vehicles use a small dynamic circle here. */
+  private updateTrafficCollisions(): void {
+    if (!this.traffic.length) return;
+    for (const car of this.traffic) {
+      if (car.zombieStop && car.hijackReady && !car.hijacked) {
+        car.hijack();
+        this.spawnVehicleZombie(car);
+      }
+      for (const z of this.zombies) {
+        if (!z.alive || Math.abs(z.pos.y - car.y) > 1.4) continue;
+        const dx = z.pos.x - car.x, dz = z.pos.z - car.z;
+        const d2 = dx * dx + dz * dz, min = car.radius + z.radius;
+        if (d2 > min * min) continue;
+        const d = Math.sqrt(d2) || 0.001;
+        z.pos.x += (dx / d) * (min - d + 0.05);
+        z.pos.z += (dz / d) * (min - d + 0.05);
+        z.stunT = Math.max(z.stunT, car.moving ? 0.35 : 0.1);
+        if (car.moving && !car.zombieStop) car.requestStop();
+      }
+      for (const s of this.survivors) {
+        if (!s.alive || Math.abs(s.pos.y - car.y) > 1.4) continue;
+        const dx = s.pos.x - car.x, dz = s.pos.z - car.z;
+        const d2 = dx * dx + dz * dz, min = car.radius + s.radius;
+        if (d2 > min * min) continue;
+        const d = Math.sqrt(d2) || 0.001;
+        s.pos.x += (dx / d) * (min - d + 0.05);
+        s.pos.z += (dz / d) * (min - d + 0.05);
+        if (car.moving && car.speed > 10 && s.sinceDamage > 0.5) this.damageSurvivor(s, 12, new THREE.Vector3(car.x, car.y, car.z));
+      }
+    }
+  }
+
+  private spawnVehicleZombie(car: TrafficObstacle): void {
+    if (this.opts.role === 'client' || this.zombies.filter((z) => z.alive).length >= this.opts.maxZombies) return;
+    const z = new Zombie();
+    z.type = 'walker';
+    z.speed = 1.1 + this.rand() * 0.5;
+    z.maxHealth = 100 * (1 + Math.max(0, this.wave - 1) * 0.13);
+    z.health = z.maxHealth;
+    z.variant = Math.floor(this.rand() * 1000);
+    z.pos.set(car.x + 1.1, terrainY(car.x + 1.1, car.z), car.z + 0.5);
+    z.yaw = this.rand() * Math.PI * 2;
+    z.snapshotPrev();
+    z.groanT = 0.5;
+    z.retargetT = 0;
+    this.zombies.push(z);
+    this.events.emit('message', { text: 'A zombie has pulled the driver out of a vehicle!', kind: 'warn' });
   }
 
   // ---------------------------------------------------------------------------------------------
